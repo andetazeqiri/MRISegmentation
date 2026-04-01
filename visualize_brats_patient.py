@@ -7,6 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
+from scipy import ndimage
 
 
 def find_patient_dir(data_dir: Path, patient_id: str | None) -> Path:
@@ -187,6 +188,75 @@ def extract_tumor_slices(
     return slices_2d, tumor_slice_indices
 
 
+def resize_slices_to_target(
+    slices_2d: list[np.ndarray],
+    target_size: int = 128,
+    method: str = "crop_center",
+) -> list[np.ndarray]:
+    """Resize or crop 2D slices to a fixed resolution.
+    
+    Args:
+        slices_2d: List of 2D slice stacks, each shape (H, W, C)
+        target_size: Target size (assumes square output: target_size x target_size)
+        method: 'crop_center' to center-crop, 'resize' to zoom/scale
+    
+    Returns:
+        List of resized/cropped slices, each shape (target_size, target_size, C)
+    """
+    resized_slices = []
+    
+    for slice_stack in slices_2d:
+        H, W, C = slice_stack.shape
+        
+        if method == "crop_center":
+            # Center crop to target_size x target_size
+            start_h = (H - target_size) // 2
+            start_w = (W - target_size) // 2
+            cropped = slice_stack[
+                max(0, start_h) : min(H, start_h + target_size),
+                max(0, start_w) : min(W, start_w + target_size),
+                :
+            ]
+            
+            # Pad if necessary (fallback for small slices)
+            if cropped.shape[0] < target_size or cropped.shape[1] < target_size:
+                padded = np.zeros((target_size, target_size, C), dtype=slice_stack.dtype)
+                pad_h_start = (target_size - cropped.shape[0]) // 2
+                pad_w_start = (target_size - cropped.shape[1]) // 2
+                padded[
+                    pad_h_start : pad_h_start + cropped.shape[0],
+                    pad_w_start : pad_w_start + cropped.shape[1],
+                    :
+                ] = cropped
+                resized_slices.append(padded)
+            else:
+                resized_slices.append(cropped)
+        
+        elif method == "resize":
+            # Resize by scaling each channel independently
+            resize_factor = target_size / max(H, W)
+            resized_stack = np.zeros((target_size, target_size, C), dtype=slice_stack.dtype)
+            
+            for c in range(C):
+                resized_channel = ndimage.zoom(slice_stack[:, :, c], resize_factor, order=1)
+                h_curr, w_curr = resized_channel.shape
+                
+                # Center-place resized channel in output
+                if h_curr < target_size or w_curr < target_size:
+                    pad_h = (target_size - h_curr) // 2
+                    pad_w = (target_size - w_curr) // 2
+                    resized_stack[
+                        pad_h : pad_h + h_curr,
+                        pad_w : pad_w + w_curr
+                    ] = resized_channel
+                else:
+                    resized_stack[:, :, c] = resized_channel[:target_size, :target_size]
+            
+            resized_slices.append(resized_stack)
+    
+    return resized_slices
+
+
 def choose_slice_index(volumes: dict[str, np.ndarray], slice_idx: int | None) -> int:
     any_volume = next(iter(volumes.values()))
     z_dim = any_volume.shape[2]
@@ -294,6 +364,14 @@ def main() -> None:
     print(f"  Z-indices: {tumor_z_indices[:5]}{'...' if len(tumor_z_indices) > 5 else ''}")
     print(f"  Each slice shape (H, W, C): {slices_2d[0].shape}")
     print(f"  Data type: {slices_2d[0].dtype}")
+    
+    # Resize slices to 128×128 for model input
+    print("\nResizing slices to fixed resolution:")
+    target_resolution = 128
+    slices_resized = resize_slices_to_target(slices_2d, target_size=target_resolution, method="crop_center")
+    print(f"  Resized {len(slices_resized)} slices to {target_resolution}×{target_resolution}")
+    print(f"  Each slice shape (H, W, C): {slices_resized[0].shape}")
+    print(f"  Data type: {slices_resized[0].dtype}")
     
     slice_idx = choose_slice_index(volumes, args.slice_idx)
     plot_modalities(volumes, slice_idx, patient_dir.name)
