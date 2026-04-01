@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .augmentation import apply_random_augmentation
 from .preprocessing import (
     collect_nii_files,
-    combine_modalities,
     extract_tumor_slices,
     load_volumes,
     normalize_modalities,
@@ -32,6 +32,11 @@ class BraTSDataset(Dataset):
         modalities: List of modalities to extract (default ['t1', 't1ce', 't2', 'flair'])
         seg_threshold: Threshold for segmentation mask (default 0.5)
         cache: Whether to cache preprocessed slices in memory (default True)
+        augment: Whether to apply random data augmentation in __getitem__ (default False)
+        flip_prob: Probability of horizontal flip augmentation (default 0.5)
+        rotation_prob: Probability of 90-degree rotation augmentation (default 0.5)
+        noise_prob: Probability of Gaussian noise augmentation (default 0.5)
+        noise_std: Standard deviation of additive Gaussian noise (default 0.05)
     """
 
     def __init__(
@@ -43,6 +48,11 @@ class BraTSDataset(Dataset):
         modalities: list[str] | None = None,
         seg_threshold: float = 0.5,
         cache: bool = True,
+        augment: bool = False,
+        flip_prob: float = 0.5,
+        rotation_prob: float = 0.5,
+        noise_prob: float = 0.5,
+        noise_std: float = 0.05,
     ):
         self.data_dir = Path(data_dir)
         self.target_size = target_size
@@ -50,6 +60,11 @@ class BraTSDataset(Dataset):
         self.modalities = modalities or ["t1", "t1ce", "t2", "flair"]
         self.seg_threshold = seg_threshold
         self.cache = cache
+        self.augment = augment
+        self.flip_prob = flip_prob
+        self.rotation_prob = rotation_prob
+        self.noise_prob = noise_prob
+        self.noise_std = noise_std
 
         if not self.data_dir.is_dir():
             raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
@@ -199,7 +214,7 @@ class BraTSDataset(Dataset):
         patient_idx, local_slice_idx = self.slice_mapping[idx]
 
         # Check cache first
-        if self.cache:
+        if self.cache and not self.augment:
             cache_key = (patient_idx, local_slice_idx)
             if cache_key in self.slice_cache:
                 return self.slice_cache[cache_key]
@@ -210,6 +225,16 @@ class BraTSDataset(Dataset):
 
         mask = self._get_mask_for_slice(patient_idx, local_slice_idx)  # shape: (H, W)
 
+        if self.augment:
+            slice_stack, mask = apply_random_augmentation(
+                slice_stack,
+                mask,
+                flip_prob=self.flip_prob,
+                rotation_prob=self.rotation_prob,
+                noise_prob=self.noise_prob,
+                noise_std=self.noise_std,
+            )
+
         # Convert to PyTorch tensors
         # Slice: (H, W, C) -> (C, H, W)
         slice_tensor = torch.from_numpy(slice_stack.transpose(2, 0, 1)).float()
@@ -218,7 +243,7 @@ class BraTSDataset(Dataset):
         mask_tensor = torch.from_numpy(mask[np.newaxis, :, :]).float()
 
         # Cache if enabled
-        if self.cache:
+        if self.cache and not self.augment:
             cache_key = (patient_idx, local_slice_idx)
             self.slice_cache[cache_key] = (slice_tensor, mask_tensor)
 
