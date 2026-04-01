@@ -37,6 +37,7 @@ class BraTSDataset(Dataset):
         rotation_prob: Probability of 90-degree rotation augmentation (default 0.5)
         noise_prob: Probability of Gaussian noise augmentation (default 0.5)
         noise_std: Standard deviation of additive Gaussian noise (default 0.05)
+        drop_empty_masks: Remove samples with empty tumor masks after resizing (default True)
     """
 
     def __init__(
@@ -53,6 +54,7 @@ class BraTSDataset(Dataset):
         rotation_prob: float = 0.5,
         noise_prob: float = 0.5,
         noise_std: float = 0.05,
+        drop_empty_masks: bool = True,
     ):
         self.data_dir = Path(data_dir)
         self.target_size = target_size
@@ -65,6 +67,7 @@ class BraTSDataset(Dataset):
         self.rotation_prob = rotation_prob
         self.noise_prob = noise_prob
         self.noise_std = noise_std
+        self.drop_empty_masks = drop_empty_masks
 
         if not self.data_dir.is_dir():
             raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
@@ -135,7 +138,82 @@ class BraTSDataset(Dataset):
             method=self.resize_method,
         )
 
+        # Safety filter: keep only samples whose resized mask still contains tumor.
+        if self.drop_empty_masks:
+            resized_slices, z_indices = self._filter_empty_mask_slices(
+                patient_dir,
+                resized_slices,
+                z_indices,
+            )
+
         return resized_slices, z_indices
+
+    def _resize_mask(self, seg_slice: np.ndarray) -> np.ndarray:
+        """Resize a 2D segmentation slice to target size using dataset resize settings."""
+        if seg_slice.shape == (self.target_size, self.target_size):
+            return seg_slice
+
+        if self.resize_method == "crop_center":
+            H, W = seg_slice.shape
+            start_h = (H - self.target_size) // 2
+            start_w = (W - self.target_size) // 2
+            seg_resized = seg_slice[
+                max(0, start_h) : min(H, start_h + self.target_size),
+                max(0, start_w) : min(W, start_w + self.target_size),
+            ]
+
+            if seg_resized.shape[0] < self.target_size or seg_resized.shape[1] < self.target_size:
+                padded = np.zeros((self.target_size, self.target_size), dtype=seg_slice.dtype)
+                pad_h_start = (self.target_size - seg_resized.shape[0]) // 2
+                pad_w_start = (self.target_size - seg_resized.shape[1]) // 2
+                padded[
+                    pad_h_start : pad_h_start + seg_resized.shape[0],
+                    pad_w_start : pad_w_start + seg_resized.shape[1],
+                ] = seg_resized
+                seg_resized = padded
+            return seg_resized
+
+        from scipy import ndimage
+
+        resize_factor = self.target_size / max(seg_slice.shape)
+        seg_resized = ndimage.zoom(seg_slice, resize_factor, order=0)
+        h_curr, w_curr = seg_resized.shape
+        padded = np.zeros((self.target_size, self.target_size), dtype=seg_slice.dtype)
+        pad_h = (self.target_size - h_curr) // 2
+        pad_w = (self.target_size - w_curr) // 2
+        padded[pad_h : pad_h + h_curr, pad_w : pad_w + w_curr] = seg_resized
+        return padded
+
+    def _filter_empty_mask_slices(
+        self,
+        patient_dir: Path,
+        slices_2d: list[np.ndarray],
+        z_indices: list[int],
+    ) -> tuple[list[np.ndarray], list[int]]:
+        """Remove slices whose resized segmentation mask has no tumor voxels."""
+        modality_paths = collect_nii_files(patient_dir)
+
+        seg_path = None
+        for key, path in modality_paths.items():
+            if key.lower() == "seg":
+                seg_path = path
+                break
+
+        if seg_path is None:
+            raise FileNotFoundError(f"Segmentation mask not found for {patient_dir.name}")
+
+        seg_volume = nib.load(str(seg_path)).get_fdata()
+
+        kept_slices = []
+        kept_z_indices = []
+        for slice_stack, z in zip(slices_2d, z_indices):
+            seg_slice = seg_volume[:, :, z]
+            seg_resized = self._resize_mask(seg_slice)
+            if np.any(seg_resized > self.seg_threshold):
+                kept_slices.append(slice_stack)
+                kept_z_indices.append(z)
+
+        return kept_slices, kept_z_indices
 
     def _get_mask_for_slice(self, patient_idx: int, local_z_idx: int) -> np.ndarray:
         """Load the segmentation mask for a specific slice.
@@ -160,41 +238,7 @@ class BraTSDataset(Dataset):
         seg_volume = nib.load(str(seg_path)).get_fdata()
         seg_slice = seg_volume[:, :, z]
 
-        # Resize mask to target size
-        if seg_slice.shape != (self.target_size, self.target_size):
-            from scipy import ndimage
-
-            if self.resize_method == "crop_center":
-                H, W = seg_slice.shape
-                start_h = (H - self.target_size) // 2
-                start_w = (W - self.target_size) // 2
-                seg_resized = seg_slice[
-                    max(0, start_h) : min(H, start_h + self.target_size),
-                    max(0, start_w) : min(W, start_w + self.target_size),
-                ]
-
-                if seg_resized.shape[0] < self.target_size or seg_resized.shape[1] < self.target_size:
-                    padded = np.zeros((self.target_size, self.target_size), dtype=seg_slice.dtype)
-                    pad_h_start = (self.target_size - seg_resized.shape[0]) // 2
-                    pad_w_start = (self.target_size - seg_resized.shape[1]) // 2
-                    padded[
-                        pad_h_start : pad_h_start + seg_resized.shape[0],
-                        pad_w_start : pad_w_start + seg_resized.shape[1],
-                    ] = seg_resized
-                    seg_resized = padded
-            else:
-                resize_factor = self.target_size / max(seg_slice.shape)
-                seg_resized = ndimage.zoom(seg_slice, resize_factor, order=0)
-                h_curr, w_curr = seg_resized.shape
-                padded = np.zeros((self.target_size, self.target_size), dtype=seg_slice.dtype)
-                pad_h = (self.target_size - h_curr) // 2
-                pad_w = (self.target_size - w_curr) // 2
-                padded[pad_h : pad_h + h_curr, pad_w : pad_w + w_curr] = seg_resized
-                seg_resized = padded
-        else:
-            seg_resized = seg_slice
-
-        return seg_resized
+        return self._resize_mask(seg_slice)
 
     def __len__(self) -> int:
         """Return total number of slices across all patients."""
