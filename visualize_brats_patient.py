@@ -50,6 +50,52 @@ def load_volumes(modality_paths: dict[str, Path]) -> dict[str, np.ndarray]:
     return volumes
 
 
+def zscore_normalize(volume: np.ndarray, exclude_zero: bool = True) -> np.ndarray:
+    """Apply z-score normalization to a volume.
+    
+    Args:
+        volume: Input 3D MRI volume
+        exclude_zero: If True, compute statistics only on non-zero voxels
+    
+    Returns:
+        Normalized volume with mean=0 and std=1 (on non-zero voxels if exclude_zero=True)
+    """
+    if exclude_zero:
+        mask = volume != 0
+        if np.sum(mask) == 0:
+            return volume
+        mean = np.mean(volume[mask])
+        std = np.std(volume[mask])
+    else:
+        mean = np.mean(volume)
+        std = np.std(volume)
+    
+    if std < 1e-8:  # Avoid division by very small numbers
+        return volume
+    
+    normalized = (volume - mean) / std
+    return normalized
+
+
+def normalize_modalities(volumes: dict[str, np.ndarray], modalities_to_normalize: list[str]) -> dict[str, np.ndarray]:
+    """Apply z-score normalization to specified modalities.
+    
+    Args:
+        volumes: Dictionary of modality names to volume arrays
+        modalities_to_normalize: List of modality names to normalize (case-insensitive)
+    
+    Returns:
+        Dictionary with normalized volumes (original dict is modified in-place)
+    """
+    for modality in modalities_to_normalize:
+        for key in volumes.keys():
+            if key.lower() == modality.lower():
+                volumes[key] = zscore_normalize(volumes[key])
+                print(f"  Normalized {key}")
+                break
+    return volumes
+
+
 def choose_slice_index(volumes: dict[str, np.ndarray], slice_idx: int | None) -> int:
     any_volume = next(iter(volumes.values()))
     z_dim = any_volume.shape[2]
@@ -137,6 +183,10 @@ def main() -> None:
     patient_dir = find_patient_dir(args.data_dir, args.patient_id)
     modality_paths = collect_nii_files(patient_dir)
     volumes = load_volumes(modality_paths)
+    
+    # Apply z-score normalization to MRI modalities
+    print("Normalizing modalities (z-score):")
+    normalize_modalities(volumes, ["t1", "t1ce", "t2", "flair"])
 
     print_shapes(patient_dir, modality_paths, volumes)
     slice_idx = choose_slice_index(volumes, args.slice_idx)
