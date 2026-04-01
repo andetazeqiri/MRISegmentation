@@ -125,6 +125,68 @@ def combine_modalities(volumes: dict[str, np.ndarray], modalities: list[str]) ->
     return multi_channel
 
 
+def extract_tumor_slices(
+    volumes: dict[str, np.ndarray],
+    modalities: list[str],
+    seg_threshold: float = 0.5,
+) -> tuple[list[np.ndarray], list[int]]:
+    """Extract 2D axial slices from 3D volumes, keeping only slices with tumor.
+    
+    Args:
+        volumes: Dictionary of modality names to volume arrays (shape: H x W x D)
+        modalities: List of modality names to extract (case-insensitive)
+        seg_threshold: Threshold for segmentation mask; voxels > threshold count as tumor
+    
+    Returns:
+        Tuple of:
+        - List of 2D slice stacks, each shape (H, W, C) where C=len(modalities)
+        - List of corresponding z-indices (axial slice positions)
+    
+    Raises:
+        ValueError: If segmentation mask not found or no tumor slices exist
+    """
+    # Find segmentation mask
+    seg = None
+    for key in volumes.keys():
+        if key.lower() == "seg":
+            seg = volumes[key]
+            break
+    
+    if seg is None:
+        raise ValueError("Segmentation mask ('seg') not found in volumes")
+    
+    # Find all slices with tumor
+    z_dim = seg.shape[2]
+    tumor_slice_indices = []
+    for z in range(z_dim):
+        if np.sum(seg[:, :, z] > seg_threshold) > 0:
+            tumor_slice_indices.append(z)
+    
+    if not tumor_slice_indices:
+        raise ValueError("No slices with tumor found in segmentation mask")
+    
+    # Extract 2D slices for each modality at tumor z-indices
+    slices_2d = []
+    for z in tumor_slice_indices:
+        channels = []
+        for modality in modalities:
+            found = False
+            for key in volumes.keys():
+                if key.lower() == modality.lower():
+                    slice_2d = volumes[key][:, :, z]
+                    channels.append(slice_2d)
+                    found = True
+                    break
+            if not found:
+                raise ValueError(f"Modality '{modality}' not found in volumes")
+        
+        # Stack channels: (H, W, C)
+        slice_stack = np.stack(channels, axis=-1)
+        slices_2d.append(slice_stack)
+    
+    return slices_2d, tumor_slice_indices
+
+
 def choose_slice_index(volumes: dict[str, np.ndarray], slice_idx: int | None) -> int:
     any_volume = next(iter(volumes.values()))
     z_dim = any_volume.shape[2]
@@ -224,6 +286,14 @@ def main() -> None:
     multi_channel = combine_modalities(volumes, ["t1", "t1ce", "t2", "flair"])
     print(f"  Combined tensor shape (H, W, D, C): {multi_channel.shape}")
     print(f"  Data type: {multi_channel.dtype}")
+    
+    # Extract 2D axial slices with tumor
+    print("\nExtracting tumor-containing axial slices:")
+    slices_2d, tumor_z_indices = extract_tumor_slices(volumes, ["t1", "t1ce", "t2", "flair"])
+    print(f"  Found {len(slices_2d)} slices with tumor")
+    print(f"  Z-indices: {tumor_z_indices[:5]}{'...' if len(tumor_z_indices) > 5 else ''}")
+    print(f"  Each slice shape (H, W, C): {slices_2d[0].shape}")
+    print(f"  Data type: {slices_2d[0].dtype}")
     
     slice_idx = choose_slice_index(volumes, args.slice_idx)
     plot_modalities(volumes, slice_idx, patient_dir.name)
