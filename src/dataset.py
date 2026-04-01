@@ -6,7 +6,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 from .augmentation import apply_random_augmentation
 from .preprocessing import (
@@ -271,6 +271,64 @@ class BraTSDataset(Dataset):
         }
 
 
+def split_train_val(
+    dataset: BraTSDataset,
+    val_ratio: float = 0.2,
+    seed: int = 42,
+    split_by_patient: bool = True,
+) -> tuple[Subset, Subset]:
+    """Split a BraTSDataset into training and validation subsets.
+
+    Args:
+        dataset: Initialized BraTSDataset.
+        val_ratio: Fraction of data for validation in range (0, 1).
+        seed: Random seed for reproducible split.
+        split_by_patient: If True, split on patient IDs to avoid patient leakage.
+            If False, split on individual slice indices.
+
+    Returns:
+        (train_subset, val_subset)
+    """
+    if not 0.0 < val_ratio < 1.0:
+        raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
+
+    rng = np.random.default_rng(seed)
+
+    if split_by_patient:
+        patient_indices = np.arange(len(dataset.patients))
+        if len(patient_indices) < 2:
+            raise ValueError("Need at least 2 patients for patient-level train/val split")
+
+        rng.shuffle(patient_indices)
+        n_val_patients = int(round(len(patient_indices) * val_ratio))
+        n_val_patients = max(1, min(len(patient_indices) - 1, n_val_patients))
+
+        val_patient_set = set(patient_indices[:n_val_patients].tolist())
+
+        train_indices = []
+        val_indices = []
+        for global_idx, (patient_idx, _) in enumerate(dataset.slice_mapping):
+            if patient_idx in val_patient_set:
+                val_indices.append(global_idx)
+            else:
+                train_indices.append(global_idx)
+    else:
+        all_indices = np.arange(len(dataset))
+        rng.shuffle(all_indices)
+        n_val = int(round(len(all_indices) * val_ratio))
+        n_val = max(1, min(len(all_indices) - 1, n_val))
+
+        val_indices = all_indices[:n_val].tolist()
+        train_indices = all_indices[n_val:].tolist()
+
+    if not train_indices or not val_indices:
+        raise ValueError("Split failed: empty train or validation subset")
+
+    train_subset = Subset(dataset, train_indices)
+    val_subset = Subset(dataset, val_indices)
+    return train_subset, val_subset
+
+
 if __name__ == "__main__":
     # Example usage
     import sys
@@ -303,3 +361,6 @@ if __name__ == "__main__":
     print(f"  Mask dtype: {mask_tensor.dtype}")
     print(f"  Slice value range: [{slice_tensor.min():.2f}, {slice_tensor.max():.2f}]")
     print(f"  Mask unique values: {torch.unique(mask_tensor).numpy()}")
+
+    train_ds, val_ds = split_train_val(dataset, val_ratio=0.2, seed=42, split_by_patient=True)
+    print(f"\nTrain/Val split -> train: {len(train_ds)} slices, val: {len(val_ds)} slices")
