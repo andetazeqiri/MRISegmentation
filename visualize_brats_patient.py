@@ -96,6 +96,35 @@ def normalize_modalities(volumes: dict[str, np.ndarray], modalities_to_normalize
     return volumes
 
 
+def combine_modalities(volumes: dict[str, np.ndarray], modalities: list[str]) -> np.ndarray:
+    """Combine multiple MRI modalities into a single multi-channel tensor.
+    
+    Args:
+        volumes: Dictionary of modality names to volume arrays (shape: H x W x D)
+        modalities: List of modality names to combine, in order (case-insensitive)
+    
+    Returns:
+        Multi-channel tensor of shape (H, W, D, C) where C=len(modalities)
+    
+    Raises:
+        ValueError: If any modality is not found in volumes
+    """
+    channels = []
+    for modality in modalities:
+        found = False
+        for key in volumes.keys():
+            if key.lower() == modality.lower():
+                channels.append(volumes[key])
+                found = True
+                break
+        if not found:
+            raise ValueError(f"Modality '{modality}' not found in volumes. Available: {list(volumes.keys())}")
+    
+    # Stack along last axis: (H, W, D, C)
+    multi_channel = np.stack(channels, axis=-1)
+    return multi_channel
+
+
 def choose_slice_index(volumes: dict[str, np.ndarray], slice_idx: int | None) -> int:
     any_volume = next(iter(volumes.values()))
     z_dim = any_volume.shape[2]
@@ -189,6 +218,13 @@ def main() -> None:
     normalize_modalities(volumes, ["t1", "t1ce", "t2", "flair"])
 
     print_shapes(patient_dir, modality_paths, volumes)
+    
+    # Combine four modalities into multi-channel tensor
+    print("\nCombining modalities into multi-channel tensor:")
+    multi_channel = combine_modalities(volumes, ["t1", "t1ce", "t2", "flair"])
+    print(f"  Combined tensor shape (H, W, D, C): {multi_channel.shape}")
+    print(f"  Data type: {multi_channel.dtype}")
+    
     slice_idx = choose_slice_index(volumes, args.slice_idx)
     plot_modalities(volumes, slice_idx, patient_dir.name)
 
