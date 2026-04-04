@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Subset
 from src.dataset import BraTSDataset, split_train_val
 from src.losses import DiceCrossEntropyLoss
 from src.metrics import DEFAULT_CLASS_NAMES, compute_dice_summary
-from src.model_architecture import UNet2D, count_trainable_parameters
+from src.model_architecture import build_model, count_trainable_parameters
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-workers", type=int, default=0)
 	parser.add_argument("--target-size", type=int, default=128)
 	parser.add_argument("--base-channels", type=int, default=32)
+	parser.add_argument("--model", type=str, default="unet", choices=["unet", "resunet"])
 	parser.add_argument("--save-dir", type=Path, default=Path("./models"))
 	return parser.parse_args()
 
@@ -46,7 +47,7 @@ def remap_brats_labels(mask: torch.Tensor) -> torch.Tensor:
 
 
 def train_one_epoch(
-	model: UNet2D,
+	model: torch.nn.Module,
 	loader: DataLoader,
 	criterion: DiceCrossEntropyLoss,
 	optimizer: torch.optim.Optimizer,
@@ -72,7 +73,7 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate(
-	model: UNet2D,
+	model: torch.nn.Module,
 	loader: DataLoader,
 	criterion: DiceCrossEntropyLoss,
 	device: torch.device,
@@ -151,13 +152,19 @@ def main() -> None:
 	)
 
 	num_classes = 4
-	model = UNet2D(in_channels=4, num_classes=num_classes, base_channels=args.base_channels).to(device)
+	model = build_model(
+		args.model,
+		in_channels=4,
+		num_classes=num_classes,
+		base_channels=args.base_channels,
+	).to(device)
 	criterion = DiceCrossEntropyLoss(alpha=0.5, beta=0.5)
 	optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
 	args.save_dir.mkdir(parents=True, exist_ok=True)
-	best_path = args.save_dir / "best_unet2d.pt"
+	best_path = args.save_dir / f"best_{args.model}.pt"
 
+	print(f"Model: {args.model}")
 	print(f"Model parameters: {count_trainable_parameters(model):,}")
 	print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
