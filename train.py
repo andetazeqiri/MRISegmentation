@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 import torch
@@ -29,6 +30,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--base-channels", type=int, default=32)
 	parser.add_argument("--model", type=str, default="unet", choices=["unet", "resunet"])
 	parser.add_argument("--save-dir", type=Path, default=Path("./models"))
+	parser.add_argument("--patience", type=int, default=12)
+	parser.add_argument("--min-delta", type=float, default=1e-4)
+	parser.add_argument("--lr-patience", type=int, default=4)
+	parser.add_argument("--lr-factor", type=float, default=0.5)
+	parser.add_argument("--history-csv", type=Path, default=Path("./models/training_history.csv"))
 	return parser.parse_args()
 
 
@@ -160,6 +166,12 @@ def main() -> None:
 	).to(device)
 	criterion = DiceCrossEntropyLoss(alpha=0.5, beta=0.5)
 	optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+	scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+		optimizer,
+		mode="max",
+		factor=args.lr_factor,
+		patience=args.lr_patience,
+	)
 
 	args.save_dir.mkdir(parents=True, exist_ok=True)
 	best_path = args.save_dir / f"best_{args.model}.pt"
@@ -169,9 +181,14 @@ def main() -> None:
 	print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
 	best_val_dice = -1.0
+	epochs_without_improvement = 0
+	history_rows: list[dict[str, float | int]] = []
 	for epoch in range(1, args.epochs + 1):
 		train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
 		val_loss, val_dice, val_class_dice = validate(model, val_loader, criterion, device, num_classes)
+		scheduler.step(val_dice)
+
+		current_lr = optimizer.param_groups[0]["lr"]
 
 		class_line = " | ".join(
 			f"{k}={v:.4f}" for k, v in val_class_dice.items() if k != "background"
@@ -179,11 +196,26 @@ def main() -> None:
 
 		print(
 			f"Epoch {epoch:03d}/{args.epochs} | "
-			f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | val_dice={val_dice:.4f} | {class_line}"
+			f"lr={current_lr:.6f} | train_loss={train_loss:.4f} | "
+			f"val_loss={val_loss:.4f} | val_dice={val_dice:.4f} | {class_line}"
+		)
+
+		history_rows.append(
+			{
+				"epoch": epoch,
+				"lr": float(current_lr),
+				"train_loss": float(train_loss),
+				"val_loss": float(val_loss),
+				"val_dice_mean": float(val_dice),
+				"val_dice_necrotic_non_enhancing": float(val_class_dice.get("necrotic_non_enhancing", 0.0)),
+				"val_dice_edema": float(val_class_dice.get("edema", 0.0)),
+				"val_dice_enhancing": float(val_class_dice.get("enhancing", 0.0)),
+			}
 		)
 
 		if val_dice > best_val_dice:
 			best_val_dice = val_dice
+			epochs_without_improvement = 0
 			torch.save(
 				{
 					"epoch": epoch,
@@ -195,6 +227,31 @@ def main() -> None:
 				best_path,
 			)
 			print(f"Saved new best model to: {best_path}")
+		else:
+			epochs_without_improvement += 1
+			if epochs_without_improvement >= args.patience:
+				print(
+					"Early stopping triggered: "
+					f"no validation Dice improvement in {args.patience} epochs."
+				)
+				break
+
+	args.history_csv.parent.mkdir(parents=True, exist_ok=True)
+	with args.history_csv.open("w", newline="", encoding="utf-8") as f:
+		fieldnames = [
+			"epoch",
+			"lr",
+			"train_loss",
+			"val_loss",
+			"val_dice_mean",
+			"val_dice_necrotic_non_enhancing",
+			"val_dice_edema",
+			"val_dice_enhancing",
+		]
+		writer = csv.DictWriter(f, fieldnames=fieldnames)
+		writer.writeheader()
+		writer.writerows(history_rows)
+	print(f"Saved training history to: {args.history_csv}")
 
 	print(f"Training complete. Best validation Dice: {best_val_dice:.4f}")
 
