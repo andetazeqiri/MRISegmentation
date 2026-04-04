@@ -10,7 +10,8 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 from src.dataset import BraTSDataset, split_train_val
-from src.losses import DiceCrossEntropyLoss, dice_score_per_class
+from src.losses import DiceCrossEntropyLoss
+from src.metrics import DEFAULT_CLASS_NAMES, compute_dice_summary
 from src.model_architecture import UNet2D, count_trainable_parameters
 
 
@@ -76,10 +77,11 @@ def validate(
 	criterion: DiceCrossEntropyLoss,
 	device: torch.device,
 	num_classes: int,
-) -> tuple[float, float]:
+) -> tuple[float, float, dict[str, float]]:
 	model.eval()
 	running_loss = 0.0
 	running_dice = 0.0
+	running_class_dice = {name: 0.0 for name in DEFAULT_CLASS_NAMES.values()}
 
 	for images, masks in loader:
 		images = images.to(device)
@@ -87,13 +89,19 @@ def validate(
 
 		logits = model(images)
 		loss = criterion(logits, masks)
-		dice_vec = dice_score_per_class(logits, masks, num_classes=num_classes)
+		mean_dice, per_class = compute_dice_summary(logits, masks, num_classes)
 
 		running_loss += loss.item()
-		running_dice += dice_vec.mean().item()
+		running_dice += mean_dice
+		for name, value in per_class.items():
+			if name in running_class_dice:
+				running_class_dice[name] += value
 
 	n_batches = max(1, len(loader))
-	return running_loss / n_batches, running_dice / n_batches
+	for name in running_class_dice:
+		running_class_dice[name] /= n_batches
+
+	return running_loss / n_batches, running_dice / n_batches, running_class_dice
 
 
 def main() -> None:
@@ -156,11 +164,15 @@ def main() -> None:
 	best_val_dice = -1.0
 	for epoch in range(1, args.epochs + 1):
 		train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
-		val_loss, val_dice = validate(model, val_loader, criterion, device, num_classes)
+		val_loss, val_dice, val_class_dice = validate(model, val_loader, criterion, device, num_classes)
+
+		class_line = " | ".join(
+			f"{k}={v:.4f}" for k, v in val_class_dice.items() if k != "background"
+		)
 
 		print(
 			f"Epoch {epoch:03d}/{args.epochs} | "
-			f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | val_dice={val_dice:.4f}"
+			f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | val_dice={val_dice:.4f} | {class_line}"
 		)
 
 		if val_dice > best_val_dice:
