@@ -240,7 +240,7 @@ def main() -> None:
 			}
 		)
 
-		if val_dice > best_val_dice:
+		if val_dice > (best_val_dice + args.min_delta):
 			best_val_dice = val_dice
 			epochs_without_improvement = 0
 			torch.save(
