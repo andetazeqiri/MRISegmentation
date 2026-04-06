@@ -65,6 +65,52 @@ def remap_brats_labels(mask: torch.Tensor) -> torch.Tensor:
 	return remapped
 
 
+def build_loss_function(alpha: float = 0.5, beta: float = 0.5) -> DiceCrossEntropyLoss:
+	"""Build the combined Dice + Cross-Entropy loss."""
+
+	return DiceCrossEntropyLoss(alpha=alpha, beta=beta)
+
+
+def build_optimizer_and_scheduler(
+	model: torch.nn.Module,
+	lr: float,
+	weight_decay: float,
+	lr_factor: float,
+	lr_patience: int,
+) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.ReduceLROnPlateau]:
+	"""Build Adam optimizer and ReduceLROnPlateau scheduler."""
+
+	optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+	scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+		optimizer,
+		mode="max",
+		factor=lr_factor,
+		patience=lr_patience,
+	)
+	return optimizer, scheduler
+
+
+class EarlyStopping:
+	"""Early stopping helper based on validation metric plateau."""
+
+	def __init__(self, patience: int, min_delta: float = 1e-4):
+		self.patience = patience
+		self.min_delta = min_delta
+		self.best = float("-inf")
+		self.bad_epochs = 0
+
+	def step(self, metric: float) -> tuple[bool, bool]:
+		"""Return (improved, should_stop)."""
+
+		if metric > (self.best + self.min_delta):
+			self.best = metric
+			self.bad_epochs = 0
+			return True, False
+
+		self.bad_epochs += 1
+		return False, self.bad_epochs >= self.patience
+
+
 def train_one_epoch(
 	model: torch.nn.Module,
 	loader: DataLoader,
@@ -122,6 +168,79 @@ def validate(
 		running_class_dice[name] /= n_batches
 
 	return running_loss / n_batches, running_dice / n_batches, running_class_dice
+
+
+def run_training_controller(
+	model: torch.nn.Module,
+	train_loader: DataLoader,
+	val_loader: DataLoader,
+	criterion: DiceCrossEntropyLoss,
+	optimizer: torch.optim.Optimizer,
+	scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau,
+	device: torch.device,
+	num_classes: int,
+	epochs: int,
+	early_stopper: EarlyStopping,
+	best_path: Path,
+	args: argparse.Namespace,
+) -> tuple[float, list[dict[str, float | int]]]:
+	"""Main training controller: train, validate, schedule, checkpoint, and stop."""
+
+	best_val_dice = float("-inf")
+	history_rows: list[dict[str, float | int]] = []
+
+	for epoch in range(1, epochs + 1):
+		train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+		val_loss, val_dice, val_class_dice = validate(model, val_loader, criterion, device, num_classes)
+		scheduler.step(val_dice)
+
+		current_lr = optimizer.param_groups[0]["lr"]
+		class_line = " | ".join(
+			f"{k}={v:.4f}" for k, v in val_class_dice.items() if k != "background"
+		)
+
+		print(
+			f"Epoch {epoch:03d}/{epochs} | "
+			f"lr={current_lr:.6f} | train_loss={train_loss:.4f} | "
+			f"val_loss={val_loss:.4f} | val_dice={val_dice:.4f} | {class_line}"
+		)
+
+		history_rows.append(
+			{
+				"epoch": epoch,
+				"lr": float(current_lr),
+				"train_loss": float(train_loss),
+				"val_loss": float(val_loss),
+				"val_dice_mean": float(val_dice),
+				"val_dice_necrotic_non_enhancing": float(val_class_dice.get("necrotic_non_enhancing", 0.0)),
+				"val_dice_edema": float(val_class_dice.get("edema", 0.0)),
+				"val_dice_enhancing": float(val_class_dice.get("enhancing", 0.0)),
+			}
+		)
+
+		improved, should_stop = early_stopper.step(val_dice)
+		if improved:
+			best_val_dice = val_dice
+			torch.save(
+				{
+					"epoch": epoch,
+					"model_state_dict": model.state_dict(),
+					"optimizer_state_dict": optimizer.state_dict(),
+					"val_dice": val_dice,
+					"args": _serialize_args(args),
+				},
+				best_path,
+			)
+			print(f"Saved new best model to: {best_path}")
+
+		if should_stop:
+			print(
+				"Early stopping triggered: "
+				f"no validation Dice improvement in {early_stopper.patience} epochs."
+			)
+			break
+
+	return best_val_dice, history_rows
 
 
 def main() -> None:
@@ -191,13 +310,13 @@ def main() -> None:
 		num_classes=num_classes,
 		base_channels=args.base_channels,
 	).to(device)
-	criterion = DiceCrossEntropyLoss(alpha=0.5, beta=0.5)
-	optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-	scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-		optimizer,
-		mode="max",
-		factor=args.lr_factor,
-		patience=args.lr_patience,
+	criterion = build_loss_function(alpha=0.5, beta=0.5)
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		model=model,
+		lr=args.lr,
+		weight_decay=args.weight_decay,
+		lr_factor=args.lr_factor,
+		lr_patience=args.lr_patience,
 	)
 
 	args.save_dir.mkdir(parents=True, exist_ok=True)
@@ -207,61 +326,21 @@ def main() -> None:
 	print(f"Model parameters: {count_trainable_parameters(model):,}")
 	print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
-	best_val_dice = -1.0
-	epochs_without_improvement = 0
-	history_rows: list[dict[str, float | int]] = []
-	for epoch in range(1, args.epochs + 1):
-		train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
-		val_loss, val_dice, val_class_dice = validate(model, val_loader, criterion, device, num_classes)
-		scheduler.step(val_dice)
-
-		current_lr = optimizer.param_groups[0]["lr"]
-
-		class_line = " | ".join(
-			f"{k}={v:.4f}" for k, v in val_class_dice.items() if k != "background"
-		)
-
-		print(
-			f"Epoch {epoch:03d}/{args.epochs} | "
-			f"lr={current_lr:.6f} | train_loss={train_loss:.4f} | "
-			f"val_loss={val_loss:.4f} | val_dice={val_dice:.4f} | {class_line}"
-		)
-
-		history_rows.append(
-			{
-				"epoch": epoch,
-				"lr": float(current_lr),
-				"train_loss": float(train_loss),
-				"val_loss": float(val_loss),
-				"val_dice_mean": float(val_dice),
-				"val_dice_necrotic_non_enhancing": float(val_class_dice.get("necrotic_non_enhancing", 0.0)),
-				"val_dice_edema": float(val_class_dice.get("edema", 0.0)),
-				"val_dice_enhancing": float(val_class_dice.get("enhancing", 0.0)),
-			}
-		)
-
-		if val_dice > (best_val_dice + args.min_delta):
-			best_val_dice = val_dice
-			epochs_without_improvement = 0
-			torch.save(
-				{
-					"epoch": epoch,
-					"model_state_dict": model.state_dict(),
-					"optimizer_state_dict": optimizer.state_dict(),
-					"val_dice": val_dice,
-					"args": _serialize_args(args),
-				},
-				best_path,
-			)
-			print(f"Saved new best model to: {best_path}")
-		else:
-			epochs_without_improvement += 1
-			if epochs_without_improvement >= args.patience:
-				print(
-					"Early stopping triggered: "
-					f"no validation Dice improvement in {args.patience} epochs."
-				)
-				break
+	early_stopper = EarlyStopping(patience=args.patience, min_delta=args.min_delta)
+	best_val_dice, history_rows = run_training_controller(
+		model=model,
+		train_loader=train_loader,
+		val_loader=val_loader,
+		criterion=criterion,
+		optimizer=optimizer,
+		scheduler=scheduler,
+		device=device,
+		num_classes=num_classes,
+		epochs=args.epochs,
+		early_stopper=early_stopper,
+		best_path=best_path,
+		args=args,
+	)
 
 	args.history_csv.parent.mkdir(parents=True, exist_ok=True)
 	with args.history_csv.open("w", newline="", encoding="utf-8") as f:
