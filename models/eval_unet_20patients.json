@@ -1,0 +1,8 @@
+{
+  "val_loss": 0.2884332463145256,
+  "val_dice_mean": 0.7858428639524123,
+  "val_dice_background": 0.9898099461022545,
+  "val_dice_necrotic_non_enhancing": 0.539539426659496,
+  "val_dice_edema": 0.7358321532799316,
+  "val_dice_enhancing": 0.8781899514076561
+}

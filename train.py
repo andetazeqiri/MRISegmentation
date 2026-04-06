@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--target-size", type=int, default=128)
 	parser.add_argument("--base-channels", type=int, default=32)
 	parser.add_argument("--model", type=str, default="unet", choices=["unet", "resunet"])
+	parser.add_argument("--max-patients", type=int, default=None)
 	parser.add_argument("--save-dir", type=Path, default=Path("./models"))
 	parser.add_argument("--patience", type=int, default=12)
 	parser.add_argument("--min-delta", type=float, default=1e-4)
@@ -42,6 +43,18 @@ def set_seed(seed: int) -> None:
 	torch.manual_seed(seed)
 	if torch.cuda.is_available():
 		torch.cuda.manual_seed_all(seed)
+
+
+def _serialize_args(args: argparse.Namespace) -> dict[str, object]:
+	"""Convert argparse namespace to checkpoint-safe primitives."""
+
+	serialized: dict[str, object] = {}
+	for key, value in vars(args).items():
+		if isinstance(value, Path):
+			serialized[key] = str(value)
+		else:
+			serialized[key] = value
+	return serialized
 
 
 def remap_brats_labels(mask: torch.Tensor) -> torch.Tensor:
@@ -120,10 +133,23 @@ def main() -> None:
 
 	dataset_eval = BraTSDataset(
 		data_dir=args.data_dir,
+		patient_ids=None,
 		target_size=args.target_size,
 		augment=False,
 		cache=True,
 	)
+	if args.max_patients is not None:
+		if args.max_patients < 2:
+			raise ValueError("--max-patients must be >= 2 for train/val split.")
+		available_ids = [p[0].name for p in dataset_eval.patients]
+		selected_ids = available_ids[: args.max_patients]
+		dataset_eval = BraTSDataset(
+			data_dir=args.data_dir,
+			patient_ids=selected_ids,
+			target_size=args.target_size,
+			augment=False,
+			cache=True,
+		)
 	train_split_eval, val_split_eval = split_train_val(
 		dataset_eval,
 		val_ratio=args.val_ratio,
@@ -133,6 +159,7 @@ def main() -> None:
 
 	dataset_train = BraTSDataset(
 		data_dir=args.data_dir,
+		patient_ids=[p[0].name for p in dataset_eval.patients],
 		target_size=args.target_size,
 		augment=True,
 		cache=False,
@@ -222,7 +249,7 @@ def main() -> None:
 					"model_state_dict": model.state_dict(),
 					"optimizer_state_dict": optimizer.state_dict(),
 					"val_dice": val_dice,
-					"args": vars(args),
+					"args": _serialize_args(args),
 				},
 				best_path,
 			)
