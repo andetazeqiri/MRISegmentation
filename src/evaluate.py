@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 import sys
@@ -17,7 +18,7 @@ if __package__ is None or __package__ == "":
 
 from src.dataset import BraTSDataset, split_train_val
 from src.losses import DiceCrossEntropyLoss
-from src.metrics import DEFAULT_CLASS_NAMES, compute_dice_summary
+from src.metrics import DEFAULT_CLASS_NAMES, compute_overlap_metrics_summary
 from src.model_architecture import build_model
 
 
@@ -34,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-json", type=Path, default=None, help="Optional path to save metrics JSON")
+    parser.add_argument("--save-csv", type=Path, default=None, help="Optional path to save metrics CSV")
     return parser.parse_args()
 
 
@@ -56,8 +58,7 @@ def evaluate(
     model.eval()
 
     total_loss = 0.0
-    total_dice = 0.0
-    total_per_class = {name: 0.0 for name in DEFAULT_CLASS_NAMES.values()}
+    sum_metrics: dict[str, float] = {}
 
     for images, masks in loader:
         images = images.to(device)
@@ -65,21 +66,26 @@ def evaluate(
 
         logits = model(images)
         loss = criterion(logits, masks)
-        mean_dice, per_class = compute_dice_summary(logits, masks, num_classes)
+        metrics = compute_overlap_metrics_summary(logits, masks, num_classes)
 
         total_loss += loss.item()
-        total_dice += mean_dice
-        for name, value in per_class.items():
-            if name in total_per_class:
-                total_per_class[name] += value
+        for key, value in metrics.items():
+            sum_metrics[key] = sum_metrics.get(key, 0.0) + float(value)
 
     n_batches = max(1, len(loader))
     results: dict[str, float] = {
         "val_loss": total_loss / n_batches,
-        "val_dice_mean": total_dice / n_batches,
+        "val_dice_mean": sum_metrics.get("dice_mean", 0.0) / n_batches,
+        "val_iou_mean": sum_metrics.get("iou_mean", 0.0) / n_batches,
+        "val_precision_mean": sum_metrics.get("precision_mean", 0.0) / n_batches,
+        "val_recall_mean": sum_metrics.get("recall_mean", 0.0) / n_batches,
     }
-    for name in total_per_class:
-        results[f"val_dice_{name}"] = total_per_class[name] / n_batches
+
+    for name in DEFAULT_CLASS_NAMES.values():
+        results[f"val_dice_{name}"] = sum_metrics.get(f"dice_{name}", 0.0) / n_batches
+        results[f"val_iou_{name}"] = sum_metrics.get(f"iou_{name}", 0.0) / n_batches
+        results[f"val_precision_{name}"] = sum_metrics.get(f"precision_{name}", 0.0) / n_batches
+        results[f"val_recall_{name}"] = sum_metrics.get(f"recall_{name}", 0.0) / n_batches
 
     return results
 
@@ -157,6 +163,9 @@ def main() -> None:
     print("Validation results:")
     print(f"  val_loss: {results['val_loss']:.4f}")
     print(f"  val_dice_mean: {results['val_dice_mean']:.4f}")
+    print(f"  val_iou_mean: {results['val_iou_mean']:.4f}")
+    print(f"  val_precision_mean: {results['val_precision_mean']:.4f}")
+    print(f"  val_recall_mean: {results['val_recall_mean']:.4f}")
     print(f"  val_dice_necrotic_non_enhancing: {results['val_dice_necrotic_non_enhancing']:.4f}")
     print(f"  val_dice_edema: {results['val_dice_edema']:.4f}")
     print(f"  val_dice_enhancing: {results['val_dice_enhancing']:.4f}")
@@ -166,6 +175,14 @@ def main() -> None:
         with args.save_json.open("w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         print(f"Saved metrics JSON to: {args.save_json}")
+
+    if args.save_csv is not None:
+        args.save_csv.parent.mkdir(parents=True, exist_ok=True)
+        with args.save_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(results.keys()))
+            writer.writeheader()
+            writer.writerow(results)
+        print(f"Saved metrics CSV to: {args.save_csv}")
 
 
 if __name__ == "__main__":
