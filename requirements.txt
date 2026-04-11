@@ -1,0 +1,12 @@
+matplotlib
+nibabel
+numpy
+scipy
+torch
+fastapi
+uvicorn
+python-multipart
+streamlit
+requests
+pandas
+scikit-learn
