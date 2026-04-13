@@ -215,6 +215,7 @@ def _load_upload_bytes(uploaded_file) -> tuple[bytes, str, np.ndarray]:
 with st.sidebar:
     st.header("Inference Controls")
     api_url = st.text_input("API endpoint", value="http://127.0.0.1:8000/predict")
+    model_type = st.selectbox("Model", options=["unet", "resunet"], index=0)
     input_file = st.file_uploader("MRI input (.nii/.nii.gz/.npy)", type=["npy", "nii", "gz"])
     gt_file = st.file_uploader("Optional ground truth mask (.nii/.nii.gz/.npy)", type=["npy", "nii", "gz"])
 
@@ -285,7 +286,7 @@ if run_clicked:
         files = {
             "file": (input_file.name, raw_bytes, "application/octet-stream"),
         }
-        form_data = {}
+        form_data = {"model_type": model_type}
         if filename.endswith(".nii") or filename.endswith(".nii.gz"):
             form_data["axis"] = str(axis)
             form_data["slice_index"] = str(slice_idx)
@@ -340,6 +341,12 @@ with mc2:
     st.metric("Tumor Pixel Ratio", f"{tumor_fraction:.3%}")
     st.markdown("</div>", unsafe_allow_html=True)
 with mc3:
+    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+    st.metric("Model", str(result["response"].get("model_type", "unet")))
+    st.markdown("</div>", unsafe_allow_html=True)
+
+mc4, _ = st.columns([1, 2])
+with mc4:
     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
     st.metric("Slice Used", str(result["response"].get("slice_index_used", "n/a")))
     st.markdown("</div>", unsafe_allow_html=True)
@@ -429,5 +436,7 @@ with tab3:
     st.caption(
         "Input mode: "
         f"{result['response'].get('input_mode', 'npy')} | "
-        f"Slice used: {result['response'].get('slice_index_used', 'n/a')}"
+        f"Slice used: {result['response'].get('slice_index_used', 'n/a')} | "
+        f"Model: {result['response'].get('model_type', 'unet')} | "
+        f"Mean confidence: {result['response'].get('mean_confidence', 0.0):.4f}"
     )

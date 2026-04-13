@@ -57,6 +57,16 @@ def _serialize_args(args: argparse.Namespace) -> dict[str, object]:
 	return serialized
 
 
+def _list_patient_ids(data_dir: Path) -> list[str]:
+	"""Return sorted BraTS patient folder names from a data directory."""
+
+	if not data_dir.is_dir():
+		raise FileNotFoundError(f"Data directory not found: {data_dir}")
+	return sorted(
+		p.name for p in data_dir.iterdir() if p.is_dir() and p.name.startswith("BraTS")
+	)
+
+
 def remap_brats_labels(mask: torch.Tensor) -> torch.Tensor:
 	"""Remap BraTS mask labels {0,1,2,4} -> {0,1,2,3}."""
 
@@ -250,25 +260,23 @@ def main() -> None:
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	print(f"Using device: {device}")
 
+	available_ids = _list_patient_ids(args.data_dir)
+	if not available_ids:
+		raise ValueError(f"No BraTS patient folders found in: {args.data_dir}")
+
+	selected_ids = available_ids
+	if args.max_patients is not None:
+		if args.max_patients < 2:
+			raise ValueError("--max-patients must be >= 2 for train/val split.")
+		selected_ids = available_ids[: args.max_patients]
+
 	dataset_eval = BraTSDataset(
 		data_dir=args.data_dir,
-		patient_ids=None,
+		patient_ids=selected_ids,
 		target_size=args.target_size,
 		augment=False,
 		cache=True,
 	)
-	if args.max_patients is not None:
-		if args.max_patients < 2:
-			raise ValueError("--max-patients must be >= 2 for train/val split.")
-		available_ids = [p[0].name for p in dataset_eval.patients]
-		selected_ids = available_ids[: args.max_patients]
-		dataset_eval = BraTSDataset(
-			data_dir=args.data_dir,
-			patient_ids=selected_ids,
-			target_size=args.target_size,
-			augment=False,
-			cache=True,
-		)
 	train_split_eval, val_split_eval = split_train_val(
 		dataset_eval,
 		val_ratio=args.val_ratio,
