@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inference utilities for loading trained models and predicting segmentation masks."""
+"""Inference pipeline utilities for segmentation model serving."""
 
 from __future__ import annotations
 
@@ -40,7 +40,10 @@ def load_model_for_inference(
     config: InferenceConfig,
     device: str | torch.device | None = None,
 ) -> tuple[torch.nn.Module, torch.device]:
-    """Load a trained segmentation model checkpoint for inference."""
+    """Stage 1: load a trained segmentation model for inference.
+
+    The model is moved to the selected device and switched to eval mode.
+    """
 
     checkpoint = Path(config.checkpoint_path)
     if not checkpoint.is_file():
@@ -144,15 +147,15 @@ def volume_to_multichannel_slice(
     )
 
 
-def preprocess_input_slice(
+def process_input_slice(
     image_slice: np.ndarray,
     target_size: int = 128,
     in_channels: int = 4,
-) -> torch.Tensor:
-    """Convert a single multi-modal MRI slice into model input tensor.
+) -> np.ndarray:
+    """Stage 2: normalize and resize a multi-modal MRI slice.
 
     Accepts either shape (H, W, C) or (C, H, W) where C==in_channels.
-    Returns tensor shape (1, C, target_size, target_size).
+    Returns a processed HxWxC array with C=in_channels.
     """
 
     arr = np.asarray(image_slice, dtype=np.float32)
@@ -174,32 +177,43 @@ def preprocess_input_slice(
         normalized[:, :, channel] = zscore_normalize(hwc[:, :, channel], exclude_zero=True).astype(np.float32)
 
     resized = _resize_slice_stack(normalized, target_size=target_size)
-    chw = np.transpose(resized, (2, 0, 1))
+    return resized.astype(np.float32)
+
+
+def prepare_input_tensor(processed_slice: np.ndarray) -> torch.Tensor:
+    """Stage 3: convert processed HxWxC slice to model tensor shape (B, C, H, W)."""
+
+    if processed_slice.ndim != 3:
+        raise ValueError(f"Expected processed_slice with 3 dims (H,W,C), got {processed_slice.shape}")
+    chw = np.transpose(processed_slice, (2, 0, 1))
     return torch.from_numpy(chw).unsqueeze(0).float()
 
 
 @torch.no_grad()
-def predict_segmentation(
+def forward_pass(
     model: torch.nn.Module,
-    image_slice: np.ndarray,
+    input_tensor: torch.Tensor,
     device: torch.device,
-    target_size: int = 128,
-    in_channels: int = 4,
-) -> dict[str, np.ndarray | dict[str, float] | list[int]]:
-    """Run segmentation inference on one multi-modal MRI slice."""
+) -> torch.Tensor:
+    """Stage 4: execute deterministic forward inference on the selected device."""
 
-    input_tensor = preprocess_input_slice(
-        image_slice,
-        target_size=target_size,
-        in_channels=in_channels,
-    ).to(device)
+    model.eval()
+    return model(input_tensor.to(device))
 
-    logits = model(input_tensor)
+
+def postprocess_logits(logits: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
+    """Stage 5: convert logits to class mask and confidence map."""
+
     probs = torch.softmax(logits, dim=1)
     pred = torch.argmax(probs, dim=1)
 
     seg = pred.squeeze(0).cpu().numpy().astype(np.int64)
     conf = probs.max(dim=1).values.squeeze(0).cpu().numpy().astype(np.float32)
+    return seg, conf
+
+
+def format_output(seg: np.ndarray, conf: np.ndarray) -> dict[str, np.ndarray | dict[str, float] | list[int]]:
+    """Stage 6: create structured output payload from segmentation artifacts."""
 
     unique, counts = np.unique(seg, return_counts=True)
     distribution = {str(int(k)): float(v / seg.size) for k, v in zip(unique, counts)}
@@ -210,3 +224,56 @@ def predict_segmentation(
         "shape": [int(seg.shape[0]), int(seg.shape[1])],
         "class_distribution": distribution,
     }
+
+
+def run_inference_pipeline(
+    model: torch.nn.Module,
+    image_slice: np.ndarray,
+    device: torch.device,
+    target_size: int = 128,
+    in_channels: int = 4,
+) -> dict[str, np.ndarray | dict[str, float] | list[int]]:
+    """Run complete 6-stage inference pipeline from input slice to structured output."""
+
+    processed = process_input_slice(
+        image_slice=image_slice,
+        target_size=target_size,
+        in_channels=in_channels,
+    )
+    input_tensor = prepare_input_tensor(processed)
+    logits = forward_pass(model, input_tensor, device)
+    seg, conf = postprocess_logits(logits)
+    return format_output(seg, conf)
+
+
+def preprocess_input_slice(
+    image_slice: np.ndarray,
+    target_size: int = 128,
+    in_channels: int = 4,
+) -> torch.Tensor:
+    """Backward-compatible wrapper returning model input tensor.
+
+    Kept for compatibility with existing call sites.
+    """
+
+    processed = process_input_slice(image_slice, target_size=target_size, in_channels=in_channels)
+    return prepare_input_tensor(processed)
+
+
+@torch.no_grad()
+def predict_segmentation(
+    model: torch.nn.Module,
+    image_slice: np.ndarray,
+    device: torch.device,
+    target_size: int = 128,
+    in_channels: int = 4,
+) -> dict[str, np.ndarray | dict[str, float] | list[int]]:
+    """Run segmentation inference using the staged pipeline implementation."""
+
+    return run_inference_pipeline(
+        model=model,
+        image_slice=image_slice,
+        device=device,
+        target_size=target_size,
+        in_channels=in_channels,
+    )
