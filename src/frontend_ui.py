@@ -62,12 +62,6 @@ st.markdown(
         font-size: 1.03rem;
     }
 
-    .metric-card {
-        background: #ffffff;
-        border: 1px solid #dde5ec;
-        border-radius: 10px;
-        padding: 10px 14px;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -76,7 +70,7 @@ st.markdown(
 st.markdown(
     """
     <div class="app-shell">
-        <p class="headline">Brain Tumor Segmentation: Inference Demonstrator</p>
+        <p class="headline">Brain Tumor Segmentation System</p>
         <p class="subline">
             This interface presents model-driven segmentation for MRI inputs and supports visual validation
             through confidence analysis and optional ground-truth comparison.
@@ -299,6 +293,10 @@ if run_clicked:
             st.error(f"API request failed: {exc}")
             st.stop()
 
+    if isinstance(data, dict) and "error" in data:
+        st.error(str(data["error"]))
+        st.stop()
+
     seg = np.array(data["segmentation"], dtype=np.int64)
     conf = np.array(data["confidence"], dtype=np.float32)
 
@@ -333,23 +331,19 @@ tumor_fraction = 1.0 - float((pred_seg == 0).mean())
 
 mc1, mc2, mc3 = st.columns(3)
 with mc1:
-    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-    st.metric("Mean Confidence", f"{mean_conf:.3f}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.metric("Mean Confidence", f"{mean_conf:.3f}")
 with mc2:
-    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-    st.metric("Tumor Pixel Ratio", f"{tumor_fraction:.3%}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.metric("Tumor Pixel Ratio", f"{tumor_fraction:.3%}")
 with mc3:
-    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-    st.metric("Model", str(result["response"].get("model_type", "unet")))
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.metric("Model", str(result["response"].get("model_type", "unet")))
 
 mc4, _ = st.columns([1, 2])
 with mc4:
-    st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-    st.metric("Slice Used", str(result["response"].get("slice_index_used", "n/a")))
-    st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.metric("Slice Used", str(result["response"].get("slice_index_used", "n/a")))
 
 tab1, tab2, tab3 = st.tabs(["Core Views", "Overlay & Validation", "Class Report"])
 

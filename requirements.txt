@@ -10,3 +10,4 @@ streamlit
 requests
 pandas
 scikit-learn
+httpx
