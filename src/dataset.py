@@ -75,7 +75,11 @@ class BraTSDataset(Dataset):
         # Find patient directories
         if patient_ids is None:
             patient_dirs = sorted(
-                [p for p in self.data_dir.iterdir() if p.is_dir() and p.name.startswith("BraTS")]
+                [
+                    p
+                    for p in self.data_dir.iterdir()
+                    if p.is_dir() and (p.name.startswith("BraTS") or p.name.startswith("FeTS"))
+                ]
             )
         else:
             patient_dirs = [self.data_dir / pid for pid in patient_ids]
@@ -84,7 +88,7 @@ class BraTSDataset(Dataset):
                     raise FileNotFoundError(f"Patient folder not found: {pd}")
 
         if not patient_dirs:
-            raise ValueError(f"No BraTS patient folders found in: {self.data_dir}")
+            raise ValueError(f"No BraTS/FeTS patient folders found in: {self.data_dir}")
 
         # Build patient-slice mapping and cache
         self.patients = []  # List of (patient_dir, num_slices)

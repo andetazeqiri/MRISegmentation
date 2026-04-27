@@ -27,9 +27,15 @@ def find_patient_dir(data_dir: Path, patient_id: str | None) -> Path:
             raise FileNotFoundError(f"Patient folder not found: {patient_dir}")
         return patient_dir
 
-    candidates = sorted([p for p in data_dir.iterdir() if p.is_dir() and p.name.startswith("BraTS")])
+    candidates = sorted(
+        [
+            p
+            for p in data_dir.iterdir()
+            if p.is_dir() and (p.name.startswith("BraTS") or p.name.startswith("FeTS"))
+        ]
+    )
     if not candidates:
-        raise FileNotFoundError(f"No patient folders found in: {data_dir}")
+        raise FileNotFoundError(f"No BraTS/FeTS patient folders found in: {data_dir}")
     return candidates[0]
 
 

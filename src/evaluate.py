@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections import defaultdict
 from pathlib import Path
 import sys
 
@@ -18,7 +19,7 @@ if __package__ is None or __package__ == "":
 
 from src.dataset import BraTSDataset, split_train_val
 from src.losses import DiceCrossEntropyLoss
-from src.metrics import DEFAULT_CLASS_NAMES, compute_overlap_metrics_summary
+from src.metrics import DEFAULT_CLASS_NAMES, compute_dice_summary, compute_overlap_metrics_summary
 from src.model_architecture import build_model
 
 
@@ -36,6 +37,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-json", type=Path, default=None, help="Optional path to save metrics JSON")
     parser.add_argument("--save-csv", type=Path, default=None, help="Optional path to save metrics CSV")
+    parser.add_argument(
+        "--save-patient-csv",
+        type=Path,
+        default=None,
+        help="Optional path to save per-patient mean Dice CSV for the validation split",
+    )
+    parser.add_argument(
+        "--save-patient-json",
+        type=Path,
+        default=None,
+        help="Optional path to save per-patient mean Dice JSON for the validation split",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +101,63 @@ def evaluate(
         results[f"val_recall_{name}"] = sum_metrics.get(f"recall_{name}", 0.0) / n_batches
 
     return results
+
+
+@torch.no_grad()
+def compute_patient_level_dice(
+    model: torch.nn.Module,
+    dataset: BraTSDataset,
+    global_indices: list[int],
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+    num_classes: int,
+) -> list[dict[str, float | int | str]]:
+    patient_to_indices: dict[int, list[int]] = defaultdict(list)
+    for global_idx in global_indices:
+        patient_idx, _ = dataset.slice_mapping[global_idx]
+        patient_to_indices[patient_idx].append(global_idx)
+
+    rows: list[dict[str, float | int | str]] = []
+    for patient_idx in sorted(patient_to_indices):
+        slice_indices = patient_to_indices[patient_idx]
+        patient_subset = Subset(dataset, slice_indices)
+        patient_loader = DataLoader(
+            patient_subset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+
+        logits_parts: list[torch.Tensor] = []
+        mask_parts: list[torch.Tensor] = []
+
+        for images, masks in patient_loader:
+            images = images.to(device)
+            masks = remap_brats_labels(masks.squeeze(1).to(device))
+            logits = model(images)
+            logits_parts.append(logits.cpu())
+            mask_parts.append(masks.cpu())
+
+        logits_full = torch.cat(logits_parts, dim=0)
+        masks_full = torch.cat(mask_parts, dim=0)
+        mean_dice, per_class = compute_dice_summary(logits_full, masks_full, num_classes)
+
+        patient_id = dataset.patients[patient_idx][0].name
+        rows.append(
+            {
+                "patient_id": patient_id,
+                "num_slices": len(slice_indices),
+                "mean_dice": float(mean_dice),
+                "dice_background": float(per_class["background"]),
+                "dice_necrotic_non_enhancing": float(per_class["necrotic_non_enhancing"]),
+                "dice_edema": float(per_class["edema"]),
+                "dice_enhancing": float(per_class["enhancing"]),
+            }
+        )
+
+    return rows
 
 
 def main() -> None:
@@ -159,6 +229,15 @@ def main() -> None:
 
     criterion = DiceCrossEntropyLoss(alpha=0.5, beta=0.5)
     results = evaluate(model, val_loader, criterion, device, num_classes)
+    patient_rows = compute_patient_level_dice(
+        model=model,
+        dataset=dataset_eval,
+        global_indices=val_split_eval.indices,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        device=device,
+        num_classes=num_classes,
+    )
 
     print("Validation results:")
     print(f"  val_loss: {results['val_loss']:.4f}")
@@ -183,6 +262,33 @@ def main() -> None:
             writer.writeheader()
             writer.writerow(results)
         print(f"Saved metrics CSV to: {args.save_csv}")
+
+    if args.save_patient_csv is not None:
+        args.save_patient_csv.parent.mkdir(parents=True, exist_ok=True)
+        with args.save_patient_csv.open("w", newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "patient_id",
+                "num_slices",
+                "mean_dice",
+                "dice_background",
+                "dice_necrotic_non_enhancing",
+                "dice_edema",
+                "dice_enhancing",
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(patient_rows)
+        print(f"Saved patient-level CSV to: {args.save_patient_csv}")
+
+    if args.save_patient_json is not None:
+        args.save_patient_json.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "n_patients": len(patient_rows),
+            "patients": patient_rows,
+        }
+        with args.save_patient_json.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        print(f"Saved patient-level JSON to: {args.save_patient_json}")
 
 
 if __name__ == "__main__":

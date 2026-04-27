@@ -1,0 +1,41 @@
+{
+  "n_patients": 4,
+  "patients": [
+    {
+      "patient_id": "BraTS20_Training_008",
+      "num_slices": 52,
+      "mean_dice": 0.7307336926460266,
+      "dice_background": 0.9889752268791199,
+      "dice_necrotic_non_enhancing": 0.4000000059604645,
+      "dice_edema": 0.7359011173248291,
+      "dice_enhancing": 0.798058271408081
+    },
+    {
+      "patient_id": "BraTS20_Training_010",
+      "num_slices": 58,
+      "mean_dice": 0.7870879769325256,
+      "dice_background": 0.9889904856681824,
+      "dice_necrotic_non_enhancing": 0.6611740589141846,
+      "dice_edema": 0.6553593277931213,
+      "dice_enhancing": 0.8428279757499695
+    },
+    {
+      "patient_id": "BraTS20_Training_015",
+      "num_slices": 79,
+      "mean_dice": 0.790998101234436,
+      "dice_background": 0.9940414428710938,
+      "dice_necrotic_non_enhancing": 0.3592294454574585,
+      "dice_edema": 0.9302359819412231,
+      "dice_enhancing": 0.8804855942726135
+    },
+    {
+      "patient_id": "BraTS20_Training_016",
+      "num_slices": 80,
+      "mean_dice": 0.6202446222305298,
+      "dice_background": 0.9897252321243286,
+      "dice_necrotic_non_enhancing": 0.051095396280288696,
+      "dice_edema": 0.8134056329727173,
+      "dice_enhancing": 0.6267521977424622
+    }
+  ]
+}

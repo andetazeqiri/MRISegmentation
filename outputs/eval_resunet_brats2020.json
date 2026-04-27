@@ -1,0 +1,23 @@
+{
+  "val_loss": 0.27520662896773396,
+  "val_dice_mean": 0.7748572195277494,
+  "val_iou_mean": 0.7193492431850994,
+  "val_precision_mean": 0.8811193774728214,
+  "val_recall_mean": 0.7883565443403581,
+  "val_dice_background": 0.9905954336418825,
+  "val_iou_background": 0.981433275867911,
+  "val_precision_background": 0.9895771251005285,
+  "val_recall_background": 0.9917134151739233,
+  "val_dice_necrotic_non_enhancing": 0.5539279520298871,
+  "val_iou_necrotic_non_enhancing": 0.518320458557629,
+  "val_precision_necrotic_non_enhancing": 0.8708672819278247,
+  "val_recall_necrotic_non_enhancing": 0.5292108309778931,
+  "val_dice_edema": 0.7214772266150803,
+  "val_iou_edema": 0.6094041206908106,
+  "val_precision_edema": 0.8168321437681181,
+  "val_recall_edema": 0.719951048400536,
+  "val_dice_enhancing": 0.8334282698810139,
+  "val_iou_enhancing": 0.7682391238277487,
+  "val_precision_enhancing": 0.8472009621932264,
+  "val_recall_enhancing": 0.9125508888460258
+}

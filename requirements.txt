@@ -11,3 +11,5 @@ requests
 pandas
 scikit-learn
 httpx
+kagglehub
+monai
