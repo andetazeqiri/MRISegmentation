@@ -1,0 +1,94 @@
+{
+  "val_patient_ids": [
+    "BraTS20_Training_005",
+    "BraTS20_Training_006",
+    "BraTS20_Training_015",
+    "BraTS20_Training_020"
+  ],
+  "3d_unet_monai": {
+    "summary": {
+      "n_cases": 4,
+      "dice_wt_mean": 0.09232079944124515,
+      "dice_tc_mean": 0.043347725483094596,
+      "dice_et_mean": 0.015960687471113327,
+      "dice_mean_regions": 0.05054307079848436
+    },
+    "cases": [
+      {
+        "dice_wt": 0.016289279112758973,
+        "dice_tc": 0.011560515304987886,
+        "dice_et": 0.009385869283098697,
+        "dice_mean_regions": 0.012411887900281852,
+        "patient_id": "BraTS20_Training_005"
+      },
+      {
+        "dice_wt": 0.11147540072372479,
+        "dice_tc": 0.03898482873867342,
+        "dice_et": 0.022480816679240907,
+        "dice_mean_regions": 0.05764701538054637,
+        "patient_id": "BraTS20_Training_006"
+      },
+      {
+        "dice_wt": 0.10379695806633549,
+        "dice_tc": 0.01836771532911815,
+        "dice_et": 0.00862827134177928,
+        "dice_mean_regions": 0.04359764824574431,
+        "patient_id": "BraTS20_Training_015"
+      },
+      {
+        "dice_wt": 0.13772155986216134,
+        "dice_tc": 0.10447784255959894,
+        "dice_et": 0.02334779258033443,
+        "dice_mean_regions": 0.08851573166736491,
+        "patient_id": "BraTS20_Training_020"
+      }
+    ],
+    "checkpoint": "models/bench_unet3d_monai.pt"
+  },
+  "2d_unet": {
+    "summary": {
+      "n_cases": 4,
+      "dice_wt_mean": 0.8997147995716552,
+      "dice_tc_mean": 0.8888147602184558,
+      "dice_et_mean": 0.8435130766929972,
+      "dice_mean_regions": 0.8773475454943694
+    },
+    "cases": [
+      {
+        "dice_wt": 0.7788176945844923,
+        "dice_tc": 0.9325373600218766,
+        "dice_et": 0.8613511993045255,
+        "dice_mean_regions": 0.8575687513036314,
+        "patient_id": "BraTS20_Training_005"
+      },
+      {
+        "dice_wt": 0.9482656281668953,
+        "dice_tc": 0.9341690012955879,
+        "dice_et": 0.8654808984824247,
+        "dice_mean_regions": 0.9159718426483027,
+        "patient_id": "BraTS20_Training_006"
+      },
+      {
+        "dice_wt": 0.942826666240529,
+        "dice_tc": 0.7670417171543129,
+        "dice_et": 0.8811311448457932,
+        "dice_mean_regions": 0.8636665094135451,
+        "patient_id": "BraTS20_Training_015"
+      },
+      {
+        "dice_wt": 0.928949209294704,
+        "dice_tc": 0.9215109624020462,
+        "dice_et": 0.7660890641392457,
+        "dice_mean_regions": 0.8721830786119987,
+        "patient_id": "BraTS20_Training_020"
+      }
+    ],
+    "checkpoint": "models/best_unet.pt"
+  },
+  "delta_3d_minus_2d": {
+    "dice_wt": -0.8073940001304101,
+    "dice_tc": -0.8454670347353612,
+    "dice_et": -0.8275523892218839,
+    "dice_mean_regions": -0.8268044746958851
+  }
+}
